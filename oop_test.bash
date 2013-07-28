@@ -1,22 +1,59 @@
 #! /usr/bin/env bash
+##
+## example.bash for bash-oop
+## by lenormf
+##
 
-. oop.bash
+source oop.bash
 
-function describe_person {
-	test $# -lt 1 && exit 1
-
-	echo $($1 . name) is a $($1 . age) years old $($1 . gender)
+class Session {		\
+	shell		\
+	username	\
+	wm		\
+	run		\
 }
 
-class Person { 	\
-	gender 		\
-	age 		\
-	name 		\
+function ctor_Session {
+	local this="$1"
+
+	$this . shell = "$SHELL"
+	$this . username = "$USER"
+	$this . wm = "BarbieWM"
+	$this . run = run_Session
+
+	echo "Opening session ($($this . username))"
 }
 
-Person bob
-bob . gender = male
-bob . age = 42
-bob . name = Bob
+function dtor_Session {
+	local this="$1"
 
-describe_person bob
+	echo "Closing session ($($this . username))"
+}
+
+function run_Session {
+	local this="$1"
+
+	shift
+	echo "Running session on $1 ($($this . username))"
+}
+
+class Empty { }
+
+function dtor_Empty {
+	local this="$1"
+
+	echo "I'll be called when the script exits ($this)"
+}
+
+Session my_session
+
+echo "Windows manager before changes: $(my_session . wm)"
+my_session . wm = "i3"
+echo "Windows manager after changes: $(my_session . wm)"
+
+my_session ! run $(hostname)
+
+delete my_session
+
+Empty my_session
+Empty foo

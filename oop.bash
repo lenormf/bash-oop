@@ -1,135 +1,233 @@
-#! /usr/bin/env bash
+##
+## oop.bash for bash-oop
+## by lenormf
+##
 
-## Private functions
-function _exit {
-	echo "$@" 1>&2
+_OOP_DEBUG=0
+
+## Mangling
+## Classes:	_BC<namelen><name> (points to the number of fields)
+## Field:	_BF<namelen><name><field type (unused)><field name>
+## Instances:	_BI<namelen><name><instance name>
+## Values:	_BV<namelen><instance name><variable name> (points to the value of the variable)
+
+## A few utils
+function _panic {
+	echo "$@"
 	exit 1
 }
 
-function _is_in_array {
-  	local VALUE="$1"
-	
-	test $# -lt 2 && _exit "_is_in_array: not enough arguments"
-  	shift
-  	for i in "$@"; do
-    	test "$i" = "$VALUE" && exit 1
-  	done
-
-  	exit 0
+function _debug_log {
+	test $_OOP_DEBUG -eq 1 && echo "$@" >&2
 }
 
-# Usage: _assert_class_declared Foo
-function _assert_class_declared {
-  	test $# -lt 1 && _exit "_assert_class_declared: not enough arguments"
-  	test -z $(eval "echo \$__CLASS__${1}__") && _exit "_assert_class_declared: unknown class ${1}"
+function _func_exists {
+	declare -F | grep -qw "$1"
 }
 
-# Usage: _assert_class_declared Foo my_var
-function _assert_variable_declared {
-  	test $# -lt 2 && _exit "_assert_variable_declared: not enough arguments"
-  	_assert_class_declared "$1"
-
-  	$(_is_in_array "$2" $(get_class_variables "$1")) \
-    	&& _exit "_assert_variable_declared: variable $2 was not declared in $1"
+## Functions that take care of mangling the names
+## Declare a class in the AST
+function _set_class {
+	export "_BC${#1}${1}"="$2"
+	_debug_log "_BC${#1}${1}=$2"
 }
 
-# Usage: _assert_object_instantiated Foo foo
-function _assert_object_instantiated {
-	test $# -lt 2 && _exit "_assert_object_instantiated: not enough arguments"
-
-	test -z $(eval echo __INST_${1}_${2}__) && _exit "_assert_object_instantiated: no instance of $1 called $2 has been defined"
+## Declare a field in a class
+function _set_field {
+	export "_BF${#1}${1}${2}${3}"=''
+	_debug_log "_BF${#1}${1}${2}${3}"
 }
 
-## Public functions
-# Usage: get_class_variables Foo
-function get_class_variables {
-	test $# -lt 1 && _exit "get_class_variables: not enough arguments"	
-  	_assert_class_declared "$1"
-
-	local CLASS_NAME="$1"
-	eval "echo \${__CLASS__${CLASS_NAME}__[@]}"
+## Declare an instance of a class
+function _set_instance {
+	export "_BI${#1}${1}${2}"=''
+	_debug_log "_BI${#1}${1}${2}"
 }
 
-# Usage: get_value Foo foo my_var
-function get_value {
- 	test $# -lt 3 && _exit "get_value: not enough argument"
-  	_assert_variable_declared "$1" "$3"
-
-	local PREFIX="__VAR__${1}_${2}_${3}__"
-  	eval echo \"'$'${PREFIX}\"
+## Set the value of a field of an instance
+function _set_value {
+	export "_BV${#1}${1}${2}"="$3"
+	_debug_log "_BV${#1}${1}${2}=$3"
 }
 
-# Usage: set_value Foo foo my_var value
-function set_value {
-	test $# -lt 4 && _exit "set_value: not enough arguments"
-	_assert_variable_declared "$1" "$3"
-	_assert_object_instantiated "$1" "$2"
-
-	local TYPE="$1"
-	local INST="$2"
-	local VAR="$3"
-	shift 3
-	eval "__VAR__${TYPE}_${INST}_${VAR}__=\"$@\""
+## Getters
+## Get the value of an instance's field
+function _get_value {
+	printenv "_BV${#1}${1}${2}"
 }
 
-# Access variables of an object
-__DECL_INST_ACCESS='
-	if [ \$# -ge 2 ]; then
-		local VARNAME="\$2"
-    	case "\$1" in
-      		.)
-				test \$# -eq 2 && get_value "$THIS_TYPE" "\$THIS_INST" "\$VARNAME"
-				test \$# -ge 4 && test "\$3" = "=" && shift 3 \
-					&& set_value "$THIS_TYPE" "\$THIS_INST" "\$VARNAME" "\$@"
-				;;
-      		*) _exit "Unknown operation \$1";;
-    	esac
-	fi
-'
+## Get the list of classes
+function _get_class {
+	local mangl=$(declare | egrep -o "_BI[0-9]+[A-Za-z_]+${1}")
+	local symlen=$(echo "${mangl:3}" | egrep -o '[0-9]+')
 
-# Instantiate an object of a certain type
-__DECL_CLASS_INST="
-	test \$# -lt 1 && _exit \"${CLASS_NAME}: not enough arguments\"
+	echo "${mangl:$((${#symlen} + 3)):${symlen}}"
+}
 
-	eval \"function \$1 {
-    	local THIS_INST=\"\$1\"
+## Has-functions
+## Test if a field was declared in a class
+function _has_field {
+	declare | grep -wq "_BF${#1}${1}${2}${3}"
+}
 
-    	for i in \$(get_class_variables \${THIS_TYPE}); do
-			local PREFIX=__VAR__\${THIS_TYPE}_\\\${THIS_INST}_\\\${i}__
-      		local VARNAME=\\\$(eval echo '$'\\\${PREFIX})
+## Test if an instance of a class was declared
+function _has_instance {
+	declare | grep -wq "_BI${#1}${1}${2}"
+}
 
-      		test ! -z \"\\\$VARNAME\" && break
-      		eval \"\\\${PREFIX}=0\"
-    	done
+## Test if a class was declared
+function _has_class {
+	declare | grep -wq "_BC${#1}${1}"
+}
 
-		$__DECL_INST_ACCESS
-	}\"
-"
+## Internal functions
+function _delete_instance {
+	local class_name="$1"
+	local inst_name="$2"
 
-# Declare a class
-function class {
-	test $# -lt 3 && _exit "class: not enough arguments"
-	test "$2" != '{' -o $(eval "echo \$$#") != '}' && _exit "class: missing braces"
-  	test ! -z $(eval "echo \$__CLASS__${1}__") && _exit "class: class $1 has always been declared"
-
-	local CLASS_NAME="$1"
-	local VARIABLES_LIST=""
-
-	shift 2
-
-	for i in "$@"; do
-		test "$i" != '}' && VARIABLES_LIST="$VARIABLES_LIST $i"
+	for i in $(declare | egrep -o "_BV${#inst_name}${inst_name}\w+"); do
+		unset "$i"
 	done
 
-	eval "__CLASS__${CLASS_NAME}__=(${VARIABLES_LIST})"
-	eval "function $CLASS_NAME {
-    	local THIS_TYPE=\"$CLASS_NAME\"
-		local INST_DEC=__INST__\${THIS_TYPE}_\${1}__
+	unset $(declare | egrep -o "_BI${#class_name}${class_name}${inst_name}")
+}
 
-		test ! -z \$(eval echo '$'\${INST_DEC}) \
-			&& _exit \"\${1}: \${THIS_INST} has already been declared\" \
-			|| eval \"\${INST_DEC}=1\"
+## Called when the script exists, this function calls all the destructors of living instances
+function _call_dtors {
+	local M=( $(declare | egrep -o "_BI[0-9]+[A-Za-z_]+") )
 
-		$__DECL_CLASS_INST
+	for i in "${M[@]}"; do
+		local symlen=$(echo "${i:3}" | egrep -o '[0-9]+')
+		local class_name="${i:$((${#symlen} + 3)):${symlen}}"
+		local inst_name="${i:$((${#symlen} + 3 + ${#class_name}))}"
+
+		_func_exists "dtor_${class_name}" \
+			&& eval "dtor_${class_name}" "${inst_name}"
+	done
+}
+
+function _get_op_callback {
+	local op="$1"
+
+	for i in "${_OPS[@]}"; do
+		local o=$(echo "$i" | cut -d: -f1)
+		local cb=$(echo "$i" | cut -d: -f2)
+
+		test "$op" = "$o" && echo "$cb" && return
+	done
+
+	echo
+}
+
+## Available operators
+_OPS=(
+	.:_op_get
+	!:_op_call
+)
+
+function _op_get {
+	local class_name="$1"
+	local inst_name="$2"
+	local var_name="$3"
+
+	shift 3
+	test -z "$var_name" && _panic "$inst_name (operator .): no field name given"
+	_has_field "${class_name}" 0 "$var_name" || _panic "$inst_name (operator .): no such field $var_name"
+
+	if [ $# -gt 1 ]; then
+		test "$1" != = && _panic "$inst_name (operator .): unknown parameter $1"
+
+		_set_value "$inst_name" "$var_name" "$2"
+	else
+		_get_value "$inst_name" "$var_name"
+	fi
+}
+
+function _op_call {
+	local class_name="$1"
+	local inst_name="$2"
+	local var_name="$3"
+
+	shift 3
+	test -z "$var_name" && _panic "$inst_name (operator .): no field name given"
+	_has_field "${class_name}" 0 "$var_name" || _panic "$inst_name (operator !): no such field $var_name"
+
+	local v=$(_get_value "$inst_name" "$var_name")
+	eval "$v" "$inst_name" "$@"
+}
+
+## The following variables contain code included in the actual commands, to improve readability
+_CLASS_INSTANCE_ACCESSOR="
+	local op=\\\"\\\$1\\\"
+	local cb=\\\$(_get_op_callback \\\"\\\$op\\\")
+
+	shift
+	test -z \\\"\\\$cb\\\" && _panic \\\"\\\$inst_name: unknown operator \\\$op\\\"
+
+	\\\$cb \\\"\\\$class_name\\\" \\\"\\\$inst_name\\\" \\\"\\\$@\\\"
+"
+
+## Exported commands
+function class {
+	test $# -lt 3 && _panic "class: invalid number or arguments (expected 3)"
+	test "$2" != '{' -o "${!#}" != '}' && _panic "class: missing braces"
+	echo "$1" | egrep -q '^[A-Za-z_]+$' || _panic "class $1: class name must contain letters and underscores only"
+
+	local class_name="$1"
+
+	_has_class "$class_name" && _panic "class: class $class_name was already declared"
+
+	## Declare the class name
+	_set_class "$class_name" $(($# - 3))
+
+	## Export the field names
+	shift 2
+	for i in "$@"; do
+		test "$i" = '}' && break
+		echo "$i" | egrep -q "^[A-Za-z_]+$" || _panic "class $1 ($i): field names must contain letters and underscores only"
+
+		## TODO: set variable types with declare ?
+		_set_field "$class_name" 0 "$i"
+	done
+
+	## Export the instances declarator
+	eval "function $class_name {
+		test \$# -lt 1 && _panic \"${class_name}: no instance name given\"
+		echo \"\$1\" | egrep -q \"^[A-Za-z_]+$\" || _panic \"${class_name} \$1: instance name must contain letters and underscores only\"
+
+		local cn=\$(_get_class \"\$1\")
+
+		test ! -z \"\$cn\" && _panic \"${class_name}: instance already declared (class \$cn)\"
+
+		_set_instance \"$class_name\" \"\$1\"
+
+		## Export the variables accessor
+		eval \"function \$1 {
+			test \\\$# -lt 1 && _panic \\\"\$1: invalid number of arguments (expected at least 1)\\\"
+
+			## Export the variable again to have access to it in this function's context
+			local class_name="$class_name"
+			local inst_name="\$1"
+
+			$_CLASS_INSTANCE_ACCESSOR
+		}\"
+
+		_func_exists \"ctor_${class_name}\" && eval \"ctor_${class_name}\" \"\$1\"
 	}"
 }
+
+function delete {
+	test $# -lt 1 && _panic "delete: invalid number of arguments (expected at least 1)"
+
+	for inst_name in "$@"; do
+		local class_name=$(_get_class "$inst_name")
+
+		_func_exists "dtor_${class_name}" \
+			&& eval "dtor_${class_name}" "$inst_name"
+
+		_delete_instance "$class_name" "$inst_name"
+	done
+}
+
+## "Garbage collector"
+trap _call_dtors EXIT
